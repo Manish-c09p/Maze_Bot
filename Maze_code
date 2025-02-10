@@ -1,0 +1,180 @@
+#include <Servo.h>
+
+// Pin Definitions
+const int TRIG_PIN = 9;
+const int ECHO_PIN = 10;
+const int SERVO_PIN = 7;
+const int MOTOR_A1 = 4;
+const int MOTOR_A2 = 2;
+const int MOTOR_B1 = 11;
+const int MOTOR_B2 = 12;
+
+// Constants
+const int WALL_THRESHOLD = 15;      // Distance to detect wall (cm)
+const int WALL_THRESHOLD_LOW = 18;  // Hysteresis threshold
+const int SERVO_DELAY = 800;        // Time for servo to move and stabilize
+const int TURN_DELAY = 370;         // Time for robot to turn
+const int MAX_DISTANCE = 100;       // Maximum valid distance reading
+const int MOTOR_SPEED = 200;        // PWM value for motors (0-255)
+
+// Variables for distance measurement
+const int NUM_READINGS = 5;
+int lastDistances[NUM_READINGS];
+int readingIndex = 0;
+bool wallDetected = false;
+
+Servo myServo;
+
+void setup() {
+    Serial.begin(9600);
+    
+    // Configure pins
+    pinMode(TRIG_PIN, OUTPUT);
+    pinMode(ECHO_PIN, INPUT);
+    pinMode(MOTOR_A1, OUTPUT);
+    pinMode(MOTOR_A2, OUTPUT);
+    pinMode(MOTOR_B1, OUTPUT);
+    pinMode(MOTOR_B2, OUTPUT);
+    
+    // Initialize servo
+    myServo.attach(SERVO_PIN);
+    myServo.write(90);  // Center position
+    
+    // Initialize distance readings
+    for (int i = 0; i < NUM_READINGS; i++) {
+        lastDistances[i] = MAX_DISTANCE;
+    }
+    
+    delay(1000);  // Startup delay
+}
+
+int getDistance() {
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
+
+    long duration = pulseIn(ECHO_PIN, HIGH, 20000);
+    if (duration == 0) return MAX_DISTANCE;
+    
+    return (duration * 0.034) / 2;
+}
+
+int getReliableDistance() {
+    int total = 0;
+    int validReadings = 0;
+
+    for (int i = 0; i < NUM_READINGS; i++) {
+        delay(10);
+        int distance = getDistance();
+        if (distance > 0 && distance < MAX_DISTANCE) {
+            lastDistances[readingIndex] = distance;
+            readingIndex = (readingIndex + 1) % NUM_READINGS;
+            total += distance;
+            validReadings++;
+        }
+    }
+
+    return validReadings > 0 ? total / validReadings : MAX_DISTANCE;
+}
+
+void stopMotors() {
+    analogWrite(MOTOR_A1, 0);
+    analogWrite(MOTOR_A2, 0);
+    analogWrite(MOTOR_B1, 0);
+    analogWrite(MOTOR_B2, 0);
+    delay(100);  // Ensure complete stop
+}
+
+void moveForward() {
+    analogWrite(MOTOR_A1, 0);
+    analogWrite(MOTOR_A2, MOTOR_SPEED);
+    analogWrite(MOTOR_B1, 0);
+    analogWrite(MOTOR_B2, MOTOR_SPEED);
+}
+
+void turnLeft() {
+    stopMotors();
+    
+    // Left motor backward, Right motor forward
+    analogWrite(MOTOR_A1, MOTOR_SPEED);
+    analogWrite(MOTOR_A2, 0);
+    analogWrite(MOTOR_B2, MOTOR_SPEED);
+    
+    delay(TURN_DELAY);
+    stopMotors();
+}
+
+void turnRight() {
+    stopMotors();
+    
+    // Left motor forward, Right motor backward
+    analogWrite(MOTOR_A2, MOTOR_SPEED);
+    analogWrite(MOTOR_B1, MOTOR_SPEED);
+    analogWrite(MOTOR_B2, 0);
+    
+    delay(TURN_DELAY);
+    stopMotors();
+}
+
+void reverse() {
+    stopMotors();
+    analogWrite(MOTOR_A2, MOTOR_SPEED);
+    analogWrite(MOTOR_B1, MOTOR_SPEED);
+    analogWrite(MOTOR_B2, 0);
+    
+    delay(TURN_DELAY * 2);  // Longer delay for 180-degree turn
+    stopMotors();
+}
+
+void checkAndMove() {
+    stopMotors();
+    delay(500);
+
+    // Check left distance
+    myServo.write(0);
+    delay(SERVO_DELAY);
+    int leftDistance = getReliableDistance();
+
+    // Check right distance
+    myServo.write(180);
+    delay(SERVO_DELAY);
+    int rightDistance = getReliableDistance();
+
+    // Return to center
+    myServo.write(90);
+    delay(SERVO_DELAY);
+
+    // Decision making based on available paths
+    if (leftDistance > rightDistance && leftDistance > WALL_THRESHOLD) {
+        turnLeft();
+    }
+    else if (rightDistance > leftDistance && rightDistance > WALL_THRESHOLD) {
+        turnRight();
+    }
+    else {
+        reverse();  // Both sides blocked, turn around
+    }
+    
+    delay(500);
+    moveForward();
+}
+
+void loop() {
+    int currentDistance = getReliableDistance();
+
+    if (currentDistance < WALL_THRESHOLD && !wallDetected) {
+        wallDetected = true;
+        checkAndMove();
+    }
+    else if (currentDistance > WALL_THRESHOLD_LOW && wallDetected) {
+        wallDetected = false;
+        moveForward();
+    }
+    else if (!wallDetected) {
+        moveForward();
+    }
+    
+    delay(50);  // Small delay to prevent overwhelming sensors
+}
